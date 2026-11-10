@@ -390,6 +390,23 @@ class octagonVariableVisitor(varMap, globals) = object
     | _ -> SkipChildren
 end
 
+(* Visitor for creating Hypergraph *)
+class hypergraphVisitor(nodes)  = object
+  inherit nopCilVisitor
+
+  method! vvdec v =
+    (* collect all vars from suitable declarations *)
+    if OctagonTracked.varinfo_tracked v then
+      nodes := VariableSet.add v !nodes;
+    DoChildren
+end
+
+let collectHypergraphNodes file =
+  let nodes = ref VariableSet.empty in
+  let visitor = new hypergraphVisitor nodes in
+  visitCilFileSameGlobals visitor file;
+  !nodes
+
 let topVars n varMap=
   let compareValueDesc = (fun (_,v1) (_,v2) -> - (compare v1 v2)) in
   varMap
@@ -426,27 +443,42 @@ let congruenceOption factors file =
     activate;
   }
 
+(*params: 
+    factors -> used to get number of instructions
+    file -> CIL representation = AST
+  return:
+    option -> heuristics for value and cost, activation function*)
 let apronOctagonOption factors file =
-  let locals =
+  (* collect all nodes and log them *)
+  let nodes = collectHypergraphNodes file in
+  Logs.info "Hypergraph: %d nodes" (VariableSet.cardinal nodes);
+  VariableSet.iter (fun v -> Logs.info "node %s (vid=%d)" v.vname v.vid) nodes;
+  (* limit for local vars / function *)
+  let locals = 
     if List.mem "specification" (get_string_list "ana.autotune.activated" ) && get_string "ana.specification" <> "" then
       if List.mem Svcomp.Specification.NoOverflow (Svcomp.Specification.of_option ()) then
         12
       else
         8
     else 8
+  (* limit for global vars *)
   in let globals = 2 in
+  (* select vars with highest score from visitor
+    why different visitor for locals and globals? *)
   let selectedLocals =
     let list = ref [] in
     let visitor = new octagonFunctionVisitor(list, locals) in
     visitCilFileSameGlobals visitor file;
     List.concat !list
   in
+  (* select vars with highest score from visitor *)
   let selectedGlobals =
     let varMap = ref VariableMap.empty in
     let visitor = new octagonVariableVisitor(varMap, true) in
     visitCilFileSameGlobals visitor file;
     topVars globals !varMap
   in
+  (* Goal: replace variable selection -> implement new visitor *)
   let allVars = (selectedGlobals @ selectedLocals) in
   let cost = (Batteries.Int.pow (locals + globals) 3) * (factors.instructions / 70) in
   let activateVars () =
